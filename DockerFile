@@ -1,0 +1,47 @@
+#Base image for PHP
+FROM php:8.2-fpm-alpine AS Base
+
+#Set working directory
+WORKDIR /var/www/html
+
+# Install system dependencies
+RUN apk add --no-cache $PHPIZE_DEPS \
+    build-base linux-headers \
+    git curl zip unzip \
+    libzip-dev libpng-dev libjpeg-turbo-dev freetype-dev \
+    icu-dev
+#Install PHP extensions
+RUN docker-php-ext-configure gd --with--freetype --with-jpeg \
+    && docker-php-ext-install -j$(nproc) gd \
+    && docker-php-ext-install pdo pdo_mysql zip bcmath pcntl exif intl
+
+#Clear cache
+RUN rm -rf /var/cache/apk/*
+
+#--- Composer Stage ---
+FROM base AS composer_stage
+#Install Composer
+COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
+#Copy Composer files
+COPY composer.json composer.lock ./
+RUN composer install --no-interaction --no-plugins --no-scripts --no-dev --prefer-dist --optimize-autoloader
+
+# -- Node.js Stage ---
+FROM node:18-alpine AS node_stage
+WORKDIR /var/www/html
+# Copy package.json files
+COPY package.json package-lock.json ./
+#Install npm dependencies
+RUN npm install && npm run build && npm cache clean --force
+
+# --- Final Stage ---
+FROM base AS app
+WORKDIR /var/www/html
+COPY ..
+COPY --from=composer_stage /var/www/html/vendor ./vendor
+COPY --from=node_stage /var/www/html/node_modules ./node_modules
+COPY --from=node_stage /var/www/html/public/build ./public/build
+
+#--- Final Config ---
+EXPOSE 9000
+CMD ["php-fpm"]
